@@ -2,6 +2,7 @@ import os
 import csv
 import io
 import json
+import boto3
 import numpy as np
 import pandas as pd
 from datetime import datetime
@@ -11,12 +12,30 @@ from auth import get_current_user
 from ml_service import predict_seizure
 from image_processor import extract_signal_from_image
 from logger import app_logger
+from botocore.config import Config
 
 router = APIRouter(prefix="/api/upload", tags=["Upload & Analysis"])
 
-UPLOAD_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "uploads")
-os.makedirs(UPLOAD_DIR, exist_ok=True)
+# Cloudflare R2 Config
+R2_ACCOUNT_ID = os.getenv("R2_ACCOUNT_ID")
+R2_ACCESS_KEY_ID = os.getenv("R2_ACCESS_KEY_ID")
+R2_SECRET_ACCESS_KEY = os.getenv("R2_SECRET_ACCESS_KEY")
+R2_BUCKET_NAME = os.getenv("R2_BUCKET_NAME")
+R2_PUBLIC_URL_PREFIX = os.getenv("R2_PUBLIC_URL_PREFIX", "").rstrip("/")
 
+def get_r2_client():
+    if not all([R2_ACCOUNT_ID, R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY]):
+        app_logger.warning("R2 credentials not fully configured. Falling back to local storage.")
+        return None
+    
+    return boto3.client(
+        service_name='s3',
+        endpoint_url=f'https://{R2_ACCOUNT_ID}.r2.cloudflarestorage.com',
+        aws_access_key_id=R2_ACCESS_KEY_ID,
+        aws_secret_access_key=R2_SECRET_ACCESS_KEY,
+        region_name='auto', # R2 uses 'auto'
+        config=Config(s3={'addressing_style': 'path'})
+    )
 
 def parse_csv_eeg(content: bytes) -> list:
     """Parse CSV file and extract EEG values (X1-X178)."""
@@ -57,7 +76,7 @@ async def upload_and_analyze(
     current_user: dict = Depends(get_current_user),
     db = Depends(get_db),
 ):
-    """Upload EEG data and run seizure prediction."""
+    """Upload EEG data to R2 and run seizure prediction."""
     filename = file.filename or "unknown"
     ext = os.path.splitext(filename)[1].lower()
 
@@ -69,11 +88,26 @@ async def upload_and_analyze(
     app_logger.info(f"Received file upload from user {current_user['id']}: {filename}")
     content = await file.read()
 
-    # Save file
-    save_path = os.path.join(UPLOAD_DIR, f"{current_user['id']}_{filename}")
-    with open(save_path, "wb") as f:
-        f.write(content)
+    # Upload to Cloudflare R2
+    r2_client = get_r2_client()
+    file_url = None
+    r2_key = f"uploads/{current_user['id']}/{datetime.utcnow().timestamp()}_{filename}"
 
+    if r2_client:
+        try:
+            r2_client.put_object(
+                Bucket=R2_BUCKET_NAME,
+                Key=r2_key,
+                Body=content,
+                ContentType=file.content_type
+            )
+            if R2_PUBLIC_URL_PREFIX:
+                file_url = f"{R2_PUBLIC_URL_PREFIX}/{r2_key}"
+            app_logger.info(f"File uploaded to R2: {r2_key}")
+        except Exception as e:
+            app_logger.error(f"R2 upload failed: {e}")
+            # Continue even if upload fails, or decide to raise error
+    
     # Parse EEG data
     is_csv = ext == ".csv"
     try:
@@ -103,6 +137,8 @@ async def upload_and_analyze(
         "confidence": result["confidence"],
         "eeg_data": eeg_values[:178],
         "signal_stats": result.get("signal_stats"),
+        "file_url": file_url,
+        "r2_key": r2_key if r2_client else None,
         "created_at": datetime.utcnow()
     }
     
@@ -118,6 +154,7 @@ async def upload_and_analyze(
         "class_probabilities": result.get("class_probabilities"),
         "signal_stats": result.get("signal_stats"),
         "eeg_data": eeg_values[:178],
+        "file_url": file_url,
         "demo_mode": result.get("demo_mode", False),
         "is_csv": is_csv,
         "created_at": prediction_doc["created_at"].isoformat(),
