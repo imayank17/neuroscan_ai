@@ -173,26 +173,45 @@ def _analyze_signal_features(signal: np.ndarray) -> dict:
     zero_crossings = np.sum(np.diff(np.sign(normalized)) != 0)
     zcr = zero_crossings / len(normalized)
 
-    # Scoring (weighted combination of seizure indicators)
+    # Scoring (tuned from seizure vs normal image comparison)
+    # Key differentiator: mean_diff (seizure=0.925 vs normal=0.401)
+    # spike_ratio (seizure=0.107 vs normal=0.079)
     score = 0.0
-    # High spike ratio → seizure indicator
-    score += min(spike_ratio * 3.0, 0.3)
-    # High mean derivative → rapid fluctuations
-    score += min(mean_diff * 0.5, 0.25)
-    # High kurtosis → sharp peaks
-    if kurt > 1.0:
-        score += min(kurt * 0.05, 0.2)
-    # Moderate zero-crossing rate (not too smooth, not too noisy)
-    if 0.1 < zcr < 0.6:
-        score += 0.15
-    # Large max spike
-    if max_diff > 2.0:
-        score += 0.1
+
+    # High mean derivative → strongest seizure indicator (rapid, consistent fluctuations)
+    if mean_diff > 0.7:
+        score += 0.35  # Strong seizure signal
+    elif mean_diff > 0.5:
+        score += 0.15  # Moderate activity
+    else:
+        score += 0.0   # Low activity = normal
+
+    # High spike ratio → many large excursions (not just one outlier)
+    if spike_ratio > 0.10:
+        score += 0.25  # Many spikes = seizure
+    elif spike_ratio > 0.06:
+        score += 0.10  # Some spikes
+
+    # Zero-crossing rate in seizure range
+    if 0.25 < zcr < 0.5:
+        score += 0.15  # Seizure-typical irregular crossing rate
+    elif 0.15 < zcr <= 0.25:
+        score += 0.05  # Mild
+
+    # Penalize very high kurtosis (single outlier spike, not seizure)
+    if kurt > 3.0:
+        score -= 0.10  # Likely a single noise spike, not repeated seizure pattern
+    elif kurt > 1.0:
+        score += 0.05  # Mild sharpness
+
+    # Large max spike (less weight — can be noise)
+    if max_diff > 3.0:
+        score += 0.05
 
     # Clamp to [0, 1]
     score = min(max(score, 0.0), 1.0)
 
-    is_seizure = score >= 0.45
+    is_seizure = score >= 0.55
 
     app_logger.info(
         f"Feature analysis: spikes={spikes}, spike_ratio={spike_ratio:.3f}, "
