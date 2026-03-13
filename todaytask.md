@@ -23,8 +23,33 @@
         * **Zero-Crossing Rate** (The frequency/rhythm of the wave)
     I mathematically tuned these thresholds so the system can precisely distinguish between the sustained, violent spikes of `image.png` (Seizure) and the gentle, periodic waves of `image copy.png` (Normal).
 
----
+### The Math Behind The Detection (Image Uploads)
+Because the LSTM was failing on image pixel data, I implemented a custom mathematical scoring system (0.0 to 1.0) for images. If the score is **$\ge 0.55$**, it's a Seizure.
 
+First, the entire signal is normalized so the mean is $0$ and the standard deviation is $1.0$:
+$$z_i = \frac{x_i - \mu}{\sigma}$$
+
+Then, four key metrics are calculated and weighted into the final score:
+
+1. **Mean Derivative (Weight: +0.35 max)**
+   * **Math**: $\frac{1}{N-1} \sum_{i=1}^{N-1} |z_{i+1} - z_i|$
+   * **What it means**: The average "speed" at which the brainwave changes direction. Seizures have rapid, jagged movements. If this value is $> 0.7$, we add a massive **+0.35** to the seizure score.
+   
+2. **Spike Ratio (Weight: +0.25 max)**
+   * **Math**: $\frac{1}{N} \sum_{i=1}^{N} I(|z_i| > 1.5)$
+   * **What it means**: The percentage of points in the brainwave that shoot past $1.5$ standard deviations. A high spike ratio ($> 10\%$) proves this isn't just one random glitch, but a sustained electrical storm. Adds **+0.25** to the score.
+
+3. **Kurtosis (Weight: Penalty of -0.10)**
+   * **Math**: $\frac{\frac{1}{N} \sum_{i=1}^{N} (z_i - \bar{z})^4}{(\frac{1}{N} \sum_{i=1}^{N} (z_i - \bar{z})^2)^2} - 3$
+   * **What it means**: Measures how "fat" the tails of the distribution are (how extreme the outliers are). Interestingly, if this is *too high* ($> 3.0$), it almost always means the image scanner just picked up a single bad pixel or vertical line on the paper. We apply a **-0.10 penalty** to prevent false positives on normal EEGs.
+
+4. **Zero-Crossing Rate (Weight: +0.15 max)**
+   * **Math**: $\frac{1}{N-1} \sum_{i=1}^{N-1} I(sgn(z_{i+1}) \neq sgn(z_i))$
+   * **What it means**: How often the wave crosses the zero-axis. Seizures have a chaotic but specific frequency band. If this rate is between $25\%$ and $50\%$, we add **+0.15** to the score.
+
+*(If the final sum $\ge 0.55 \rightarrow \text{Seizure}$)*
+
+---
 ## 2. Accuracy Improvements
 
 ### Standardization (Zero-Mean Unit-Variance)
