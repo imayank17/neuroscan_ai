@@ -1,4 +1,5 @@
 import os
+import certifi
 from pymongo import MongoClient
 from dotenv import load_dotenv
 
@@ -13,7 +14,8 @@ if not DATABASE_URL:
 # Create a database connection
 try:
     from logger import app_logger
-    client = MongoClient(DATABASE_URL)
+    # Use certifi for TLS CA file to handle SSL handshake on Linux environments like Render
+    client = MongoClient(DATABASE_URL, tlsCAFile=certifi.where())
     # The ismaster command is cheap and does not require auth.
     client.admin.command('ismaster')
     app_logger.info("Successfully connected to MongoDB cluster.")
