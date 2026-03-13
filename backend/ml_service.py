@@ -45,20 +45,20 @@ def preprocess_eeg_data(raw_data: list) -> np.ndarray:
     # Reshape to (batch, 178, 1)
     data = data.reshape(-1, 178, 1)
 
-    # Subsample every 4th point (as in the notebook)
-    data_subsampled = data[:, ::4, :]
-
     # Normalize
-    mean = data_subsampled.mean()
-    std = data_subsampled.std()
-    if std == 0:
-        std = 1.0
-    data_normalized = (data_subsampled - mean) / std
+    # Zero-mean unit-variance per sample is more robust for digitized signals
+    data_normalized = []
+    for sample in data:
+        s = sample.flatten()
+        mean = s.mean()
+        std = s.std()
+        if std == 0: std = 1.0
+        data_normalized.append((s - mean) / std)
+    
+    return np.array(data_normalized).reshape(-1, 178, 1)
 
-    return data_normalized
 
-
-def predict_seizure(eeg_values: list) -> dict:
+def predict_seizure(eeg_values: list, source_type: str = "csv") -> dict:
     """
     Run seizure prediction on EEG data.
     Returns: {prediction, confidence, class_probabilities, signal_stats}
@@ -112,6 +112,15 @@ def predict_seizure(eeg_values: list) -> dict:
         # Seizure probability specifically
         seizure_prob = float(class_probs[0]) if len(class_probs) > 0 else 0.0
 
+        # If source is image, also run feature-based analysis
+        if source_type == "image":
+            feature_result = _analyze_signal_features(raw)
+            app_logger.info(f"Image feature analysis: seizure_score={feature_result['seizure_score']:.2f}")
+            # Use feature analysis as the primary decision for images
+            is_seizure = feature_result["is_seizure"]
+            seizure_prob = feature_result["seizure_score"]
+            confidence = max(seizure_prob, 1 - seizure_prob)
+
         result = {
             "prediction": "Seizure" if is_seizure else "Non-Seizure",
             "confidence": round(confidence, 4),
@@ -136,3 +145,69 @@ def predict_seizure(eeg_values: list) -> dict:
             "signal_stats": signal_stats,
             "demo_mode": False,
         }
+
+
+def _analyze_signal_features(signal: np.ndarray) -> dict:
+    """
+    Analyze signal features to detect seizure patterns in digitized images.
+    Uses spike frequency, amplitude variance, and kurtosis — key EEG seizure markers.
+    """
+    from scipy.stats import kurtosis as calc_kurtosis
+
+    normalized = (signal - signal.mean()) / (signal.std() if signal.std() != 0 else 1.0)
+
+    # 1. Spike Detection: count large amplitude excursions
+    threshold = 1.5  # z-score threshold
+    spikes = np.sum(np.abs(normalized) > threshold)
+    spike_ratio = spikes / len(normalized)
+
+    # 2. Derivative Analysis: seizures have rapid changes
+    diffs = np.abs(np.diff(normalized))
+    mean_diff = np.mean(diffs)
+    max_diff = np.max(diffs)
+
+    # 3. Kurtosis: seizures have sharp peaks (high kurtosis)
+    kurt = float(calc_kurtosis(normalized))
+
+    # 4. Zero-crossing rate: seizures have irregular crossings
+    zero_crossings = np.sum(np.diff(np.sign(normalized)) != 0)
+    zcr = zero_crossings / len(normalized)
+
+    # Scoring (weighted combination of seizure indicators)
+    score = 0.0
+    # High spike ratio → seizure indicator
+    score += min(spike_ratio * 3.0, 0.3)
+    # High mean derivative → rapid fluctuations
+    score += min(mean_diff * 0.5, 0.25)
+    # High kurtosis → sharp peaks
+    if kurt > 1.0:
+        score += min(kurt * 0.05, 0.2)
+    # Moderate zero-crossing rate (not too smooth, not too noisy)
+    if 0.1 < zcr < 0.6:
+        score += 0.15
+    # Large max spike
+    if max_diff > 2.0:
+        score += 0.1
+
+    # Clamp to [0, 1]
+    score = min(max(score, 0.0), 1.0)
+
+    is_seizure = score >= 0.45
+
+    app_logger.info(
+        f"Feature analysis: spikes={spikes}, spike_ratio={spike_ratio:.3f}, "
+        f"mean_diff={mean_diff:.3f}, kurt={kurt:.3f}, zcr={zcr:.3f}, score={score:.3f}"
+    )
+
+    return {
+        "is_seizure": is_seizure,
+        "seizure_score": round(score, 4),
+        "features": {
+            "spike_count": int(spikes),
+            "spike_ratio": round(spike_ratio, 4),
+            "mean_derivative": round(mean_diff, 4),
+            "max_derivative": round(max_diff, 4),
+            "kurtosis": round(kurt, 4),
+            "zero_crossing_rate": round(zcr, 4),
+        }
+    }

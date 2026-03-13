@@ -126,7 +126,7 @@ async def upload_and_analyze(
         raise HTTPException(400, f"Error parsing file: {str(e)}")
 
     # Run prediction
-    result = predict_seizure(eeg_values)
+    result = predict_seizure(eeg_values, source_type=file_type)
 
     # Save to database
     prediction_doc = {
