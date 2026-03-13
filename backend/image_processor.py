@@ -58,9 +58,13 @@ def extract_signal_from_image(image_bytes: bytes) -> list:
         
         app_logger.info(f"Extracted {len(raw_signal)} raw data points from image width {w}")
         
-        # 4. Resample to exactly 178 points (as required by model)
+        # 4. Smoothing and Resampling
         if len(raw_signal) < 10:
             raise ValueError("Extracted signal too short - image may not contain a clear wave.")
+        
+        # Apply median filter to remove digitization "spikes"
+        from scipy.signal import medfilt
+        raw_signal = medfilt(raw_signal, kernel_size=3).tolist()
             
         resampled_signal = resample(raw_signal, 178).tolist()
         

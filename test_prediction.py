@@ -2,38 +2,33 @@ import pandas as pd
 import numpy as np
 import os
 import sys
+
+# Add backend to path
 sys.path.append(os.path.join(os.getcwd(), "backend"))
 from ml_service import predict_seizure
 
 data_path = "backend/data.csv"
 if os.path.exists(data_path):
     df = pd.read_csv(data_path)
-    # Find a seizure sample (y=1)
-    seizure_sample = df[df['y'] == 1].iloc[0]
     feature_cols = [f"X{i}" for i in range(1, 179)]
-    eeg_values = seizure_sample[feature_cols].values.tolist()
     
-    # Directly try to load model to see the error
-    try:
-        from tensorflow.keras.models import load_model
-        model_path = os.path.join(os.getcwd(), "backend", "Epilepsy.h5")
-        print(f"Directly loading from: {model_path}")
-        # Try loading without compilation to see if it's a serialization issue
-        model = load_model(model_path, compile=False)
-        print("Model loaded successfully with compile=False")
-        print("Model Input:", model.input_shape)
-    except Exception as e:
-        print(f"DIRECT LOAD ERROR: {e}")
-        import traceback
-        traceback.print_exc()
+    # 1. Test Seizure (y=1)
+    seizure_sample = df[df['y'] == 1].iloc[0]
+    eeg_values_s = seizure_sample[feature_cols].values.tolist()
+    print(f"\n--- Testing Seizure Sample (y=1) ---")
+    result_s = predict_seizure(eeg_values_s)
+    print("Prediction:", result_s['prediction'])
+    print("Confidence:", result_s['confidence'])
+    print("Seizure Prob:", result_s.get('seizure_probability'))
+    
+    # 2. Test Non-Seizure (y=2 or 3 or 4 or 5)
+    non_seizure_sample = df[df['y'] != 1].iloc[0]
+    eeg_values_ns = non_seizure_sample[feature_cols].values.tolist()
+    print(f"\n--- Testing Non-Seizure Sample (y={non_seizure_sample['y']}) ---")
+    result_ns = predict_seizure(eeg_values_ns)
+    print("Prediction:", result_ns['prediction'])
+    print("Confidence:", result_ns['confidence'])
+    print("Seizure Prob:", result_ns.get('seizure_probability'))
 
-    print(f"\nTesting with sample labeled y={seizure_sample['y']}")
-    # Fallback to the real ml_service logic
-    try:
-        result = predict_seizure(eeg_values)
-        print("Prediction Result:", result['prediction'])
-        print("Demo Mode:", result.get('demo_mode'))
-    except Exception as e:
-        print(f"PREDICT ERROR: {e}")
 else:
     print("data.csv not found")
